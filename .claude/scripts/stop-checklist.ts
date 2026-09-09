@@ -1,25 +1,19 @@
 #!/usr/bin/env node
 /**
- * Stop hook — remind the user of session-wrap-up tasks and kick a
- * debounced QMD refresh so the next session opens against a current
- * index.
+ * Conversation-boundary hook — keep per-turn Stop lightweight and emit the
+ * wrap-up checklist only at true SessionEnd.
  *
- * Silently exits when the hook is being re-entered by a secondary
- * agent (stop_hook_active=true) to avoid recursive reminder output and
- * duplicated refresh spawns. Otherwise prints the vault-hygiene
- * checklist and routes through the same `triggerDebouncedRefresh`
- * entry the PostToolUse hook uses — one debounce contract, one spawn
- * shape, zero drift between the two paths.
+ * Stop fires whenever Claude or Codex finishes a response, not when the
+ * conversation ends. On that event this script emits an empty JSON envelope
+ * and only kicks the debounced QMD refresh. SessionEnd is the user-facing
+ * boundary: it prints the checklist and the current vault-hygiene findings.
  *
- * Output is JSON on every agent, never plain text. Codex surfaced this by
- * failing loudly — its Stop protocol rejects non-JSON stdout — but the text
- * path was never read anywhere: Gemini's SessionEnd contract forbids plain
- * stdout, and Claude Code sends non-exempt Stop stdout to the debug log
- * rather than to the user or the model. A checklist nobody receives is the
- * same bug in three places, so all three get the one field they agree on,
- * `systemMessage`. Emitting it unconditionally is also what keeps this
- * script agent-agnostic: no flag, and no sniffing the payload to guess who
- * is calling.
+ * Output is JSON on every agent, never plain text. Codex rejects plain Stop
+ * stdout, Gemini's SessionEnd contract requires a final JSON object, and
+ * Claude Code otherwise files non-exempt stdout in the debug log. Stop gets
+ * the empty envelope; SessionEnd gets the one user-facing field all three
+ * agents share, `systemMessage`. The documented event name is the only
+ * branch — no agent sniffing and no agent-specific argument.
  */
 
 import { readFileSync } from "node:fs";
@@ -49,6 +43,7 @@ const SENTINEL_PATH =
 const WORKER_PATH = resolvePath(SCRIPT_DIR, "qmd-refresh-run.ts");
 
 type HookInput = {
+	readonly hook_event_name?: unknown;
 	readonly stop_hook_active?: unknown;
 };
 
@@ -62,18 +57,38 @@ if (input?.stop_hook_active === true) {
 	process.exit(0);
 }
 
+// Stop is a per-turn lifecycle event on Claude and Codex. Reporting the same
+// unchanged drift here trains users to ignore the warning, and systemMessage
+// cannot make the agent act on it. Keep the refresh, but reserve the visible
+// handoff for true SessionEnd.
+if (input?.hook_event_name === "Stop") {
+	writeSilentHookOutput();
+	triggerDebouncedRefresh({
+		sentinelPath: SENTINEL_PATH,
+		workerPath: WORKER_PATH,
+		debounceMs: DEBOUNCE_MS,
+		logPrefix: "stop-checklist",
+	});
+	process.exit(0);
+}
+
 const checklist = [
 	"Session end checklist:",
 	"- Archive completed projects? (work/active/ -> work/archive/YYYY/)",
 	"- Update indexes? (Index.md, Memories.md, People & Context, Brag Doc)",
 	"- New notes linked? (orphans are bugs)",
-	"- Run /om-vault-audit if many notes were created/modified",
+	"- Ask the agent to run om-vault-audit if many notes were created/modified",
+	"- To act on any drift, start or resume a live session and ask the agent to run om-tidy",
 ].join("\n");
 
 // Concrete drift findings beat a generic checklist (#98/#103/#106): the
 // same scan SessionStart runs, so the session closes against the same
 // facts it opened with. Silent when clean.
-const vaultRoot = process.env["CLAUDE_PROJECT_DIR"] || process.cwd();
+const vaultRoot =
+	process.env["CLAUDE_PROJECT_DIR"] ||
+	process.env["CODEX_PROJECT_DIR"] ||
+	process.env["GEMINI_PROJECT_DIR"] ||
+	resolvePath(SCRIPT_DIR, "..", "..");
 let manifestJson: string | null = null;
 try {
 	manifestJson = readFileSync(join(vaultRoot, "vault-manifest.json"), {

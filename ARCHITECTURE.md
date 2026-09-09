@@ -157,7 +157,7 @@ The `infrastructure[]` vs `user_content_roots[]` split is what makes `/om-vault-
 
 ## Lifecycle Hooks
 
-Five hooks run at different moments in a session. Each is a small Node script invoked via `--experimental-strip-types` (TypeScript executes directly, no build step).
+Six hooks run at different moments in a session. Each is a small Node script invoked via `--experimental-strip-types` (TypeScript executes directly, no build step).
 
 ```mermaid
 sequenceDiagram
@@ -191,18 +191,25 @@ sequenceDiagram
     Agent->>Hooks: PreCompact
     Hooks->>Vault: back up transcript to thinking/session-logs/
 
+    loop each completed response
+        Agent->>Hooks: Stop
+        Hooks->>QMD: debounced refresh (detached)
+        Hooks-->>Agent: empty envelope (no user warning)
+    end
+
     User->>Agent: end session
-    Agent->>Hooks: Stop
-    Hooks-->>Agent: wrap-up checklist reminder
+    Agent->>Hooks: SessionEnd
+    Hooks-->>User: checklist + hygiene handoff
 ```
 
 A few specific design choices are worth calling out:
 
 - **`SessionStart` injects, it does not load.** It builds a briefing (filename listing, North Star excerpt, git summary, open tasks aggregated from `work/active/` and the vault root) and hands it to the agent. Full note contents never flow through this hook. Its size is bounded by `eager_layer_budget_bytes` and reported by the meter on the last line of every injection, so the cost is visible rather than assumed. The open-tasks scan is filesystem-only so the hook never spawns the Obsidian CLI — that subprocess flashes the Electron app on macOS when no instance is running (#83).
 - **`UserPromptSubmit` classifies, it does not route.** It tags the prompt with hints like `ARCHITECTURE discussion` or `DECISION`; the agent decides where to file. Keeping the hook opinion-free means the routing logic lives in `CLAUDE.md`, which is editable per-user without touching scripts.
-- **QMD refresh is shared, debounced, and detached.** Three hook entries fire the same refresh helper — `PostToolUse` (after `.md` writes), `PreCompact` (before transcript backup; writes tend to cluster before compaction), and `Stop` (end of session) — sharing one sentinel file so a burst of events produces at most one worker per debounce window. The actual indexing runs in `.claude/scripts/qmd-refresh-run.ts` as a detached, stdio-silent worker (`qmd update` → `qmd embed` → tail-chase `qmd update`), so the parent hook returns in milliseconds and nothing flows to the agent's context.
+- **QMD refresh is shared, debounced, and detached.** Three hook entries fire the same refresh helper — `PostToolUse` (after `.md` writes), `PreCompact` (before transcript backup; writes tend to cluster before compaction), and `Stop` (after a response) — sharing one sentinel file so a burst of events produces at most one worker per debounce window. The actual indexing runs in `.claude/scripts/qmd-refresh-run.ts` as a detached, stdio-silent worker (`qmd update` → `qmd embed` → tail-chase `qmd update`), so the parent hook returns in milliseconds and nothing flows to the agent's context.
 - **`PreCompact` also backs up the transcript.** In addition to kicking the QMD refresh, it copies the current session transcript out to `thinking/session-logs/` so long conversations remain recoverable after compaction.
-- **`Stop` is deliberately lightweight.** Beyond triggering the shared refresh, it only prints a short checklist. For a thorough review, the user invokes `/om-wrap-up` explicitly. Putting heavy logic in a Stop hook would slow every session exit and surprise the user.
+- **`Stop` is deliberately silent.** Claude and Codex fire it whenever the agent finishes a response, not when the session ends. It triggers the shared refresh and returns an empty JSON envelope, so unchanged hygiene does not become a warning after every turn.
+- **`SessionEnd` is a handoff, not an acting surface.** All three agents emit the checklist and concrete hygiene findings only when the conversation actually ends. The message tells the user to ask the agent to run `om-tidy` in a live session; explicit `/om-wrap-up` runs that acting pass before tools disappear.
 
 ---
 
@@ -214,7 +221,7 @@ QMD provides semantic search. It is the mechanism behind most of the agent's ret
 |--------|-------------|------|
 | Agent tool menu | `.mcp.json` → `qmd-mcp.mjs` | Every `mcp__qmd__*` tool call from a session inside the vault |
 | Session startup | `session-start.ts` | Re-index on every new session |
-| Mid-session refresh | `validate-write.ts` / `stop-checklist.ts` / `pre-compact.ts` → `lib/qmd-refresh.ts` (shared sentinel + debounce) → detached `qmd-refresh-run.ts` | After `.md` writes, at session end, and before compaction |
+| Mid-session refresh | `validate-write.ts` / `stop-checklist.ts` / `pre-compact.ts` → `lib/qmd-refresh.ts` (shared sentinel + debounce) → detached `qmd-refresh-run.ts` | After `.md` writes, after responses, and before compaction |
 | The `om` server | `lib/mcp-qmd-client.ts` (search) and `reindexSync` (after a write) | Every `search`, every queried `recall`, every `remember` / `record_work` |
 
 Every `qmd update` invocation re-reads the per-index YAML (`~/.config/qmd/<index>.yml`), so changes to the collection config — including the ignore list synced from `.obsidian/app.json` — propagate to every surface without a session restart.
@@ -869,9 +876,9 @@ Step 2 is not documentation garnish. Measured: with the server wired and no repo
 
 ## Multi-Agent Portability
 
-The same scripts serve three agents. Each agent has its own config file mapping its own event names to the shared scripts. The event vocabularies differ — Claude Code calls it `Stop`, Gemini calls it `SessionEnd`, Codex has no compaction event — but the scripts are identical, and so are the arguments they are invoked with.
+The same scripts serve three agents. Each agent has its own config file mapping equivalent lifecycle events to the shared scripts. Claude Code and Codex use `Stop` as a per-turn boundary and `SessionEnd` as the true conversation boundary; Gemini needs only `SessionEnd` here. The script branches on the documented event name, never on an agent-specific payload field.
 
-Session-end output is the one place where that uniformity had to be earned rather than assumed. All three agents treat session-end stdout as JSON-or-nothing, but only Codex says so out loud: it reports a hook failure on plain text, while Gemini's `SessionEnd` contract silently drops anything that isn't the final JSON object, and Claude Code routes non-exempt `Stop` stdout to the debug log — read by nobody. A plain-text checklist therefore looked like it worked on two agents and broke on one, when in fact it reached none of them. `stop-checklist.ts` emits `{"systemMessage": ...}` unconditionally: `systemMessage` is the only output field all three implement with the same meaning, and emitting it unconditionally is what keeps the script from having to know which agent invoked it.
+Session-boundary output is JSON-or-nothing on all three agents. `stop-checklist.ts` therefore emits `{}` for per-turn Stop and `{"systemMessage": ...}` for SessionEnd. `systemMessage` is intentionally a user warning rather than model context: it can hand work to the next live session, but it cannot invoke a command after tools are gone. That is why `om-wrap-up` owns the acting path and SessionEnd owns only the final receipt.
 
 ```mermaid
 flowchart TB

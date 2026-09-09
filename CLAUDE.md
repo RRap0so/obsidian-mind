@@ -436,7 +436,7 @@ Specialized agents in `.claude/agents/` for heavy operations. They run in isolat
 
 ## Hooks
 
-Five lifecycle hooks in `.claude/settings.json`:
+Six lifecycle hooks in `.claude/settings.json`:
 
 | Hook | When | What |
 |------|------|------|
@@ -444,7 +444,8 @@ Five lifecycle hooks in `.claude/settings.json`:
 | UserPromptSubmit | Every message | Classifies content (decision, incident, win, 1:1, architecture, person, project update) and injects routing hints |
 | PostToolUse | After writing `.md` | Validates frontmatter + wikilinks, blocks misplaced memory files, flags notes crossing the 25KB organization threshold (split, don't trim) and write-time topic clusters |
 | PreCompact | Before context compaction | Backs up session transcript to `thinking/session-logs/` |
-| Stop | End of every session | Lightweight checklist reminder + concrete vault-hygiene drift findings (same scan as SessionStart). For thorough review, use `/om-wrap-up` instead. |
+| Stop | After every response | Silently triggers the shared debounced QMD refresh; user-facing output is reserved for the true session boundary |
+| SessionEnd | When the session actually ends | Checklist + concrete vault-hygiene drift findings (same scan as SessionStart), with a portable handoff to ask the agent to run `om-tidy` in a live session |
 
 ## Write-Correctness Laws
 

@@ -125,32 +125,44 @@ describe("hook config — CWD-independent script resolution (issue #45)", () => 
 });
 
 /**
- * The session-end checklist is one script with one output contract. It used
- * to be tempting to give Codex a `--json` flag, because Codex is the only
- * agent that *fails* on plain-text stdout — but Gemini ignores it and Claude
- * Code buries it, so the flag would have encoded a per-agent difference that
- * does not exist. The script now always emits the JSON envelope, which means
- * no config may pass it agent-specific arguments.
+ * Stop is a turn boundary on Claude and Codex; SessionEnd is the real
+ * conversation boundary on all three agents. The shared script refreshes QMD
+ * silently for Stop and emits the user-facing checklist only for SessionEnd.
+ * Pin that lifecycle split so a config edit cannot restore the per-turn nag.
  */
-describe("hook config — the checklist hook is invoked identically everywhere", () => {
+describe("hook config — checklist uses true SessionEnd everywhere", () => {
 	for (const { label, path } of configs) {
-		const checklistCommands = eachNodeHookCommand(loadConfig(path))
-			.map(({ command }) => command)
-			.filter((command) => command.includes("stop-checklist.ts"));
+		const boundaryHooks = eachNodeHookCommand(loadConfig(path)).filter(
+			({ command }) => command.includes("stop-checklist.ts"),
+		);
+		const sessionEndCommands = boundaryHooks
+			.filter(({ event }) => event === "SessionEnd")
+			.map(({ command }) => command);
+		const stopCommands = boundaryHooks
+			.filter(({ event }) => event === "Stop")
+			.map(({ command }) => command);
 
-		test(`${label} wires the checklist hook exactly once`, () => {
+		test(`${label} wires the visible checklist to SessionEnd exactly once`, () => {
 			assert.equal(
-				checklistCommands.length,
+				sessionEndCommands.length,
 				1,
-				`expected ${path} to invoke stop-checklist.ts once — got ${checklistCommands.length}`,
+				`expected ${path} SessionEnd to invoke stop-checklist.ts once — got ${sessionEndCommands.length}`,
 			);
 		});
 
-		test(`${label} passes the checklist hook no arguments`, () => {
+		test(`${label} passes the SessionEnd hook no arguments`, () => {
 			assert.match(
-				checklistCommands[0] ?? "",
+				sessionEndCommands[0] ?? "",
 				/stop-checklist\.ts"$/,
 				`${path} must invoke stop-checklist.ts with no trailing arguments — its output contract is the same for every agent`,
+			);
+		});
+
+		test(`${label} uses Stop only where per-turn refresh is supported`, () => {
+			assert.equal(
+				stopCommands.length,
+				label === "Gemini CLI" ? 0 : 1,
+				`${path} has the wrong number of silent Stop refresh hooks`,
 			);
 		});
 	}

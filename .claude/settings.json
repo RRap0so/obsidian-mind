@@ -56,6 +56,17 @@
           }
         ]
       }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node --disable-warning=ExperimentalWarning --experimental-strip-types \"${CLAUDE_PROJECT_DIR:-.}/.claude/scripts/stop-checklist.ts\"",
+            "timeout": 5
+          }
+        ]
+      }
     ]
   }
 }

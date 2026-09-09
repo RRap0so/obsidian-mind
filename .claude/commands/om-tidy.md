@@ -4,7 +4,7 @@ description: "Self-maintenance pass — acts on every hygiene flag: archives com
 
 # /om-tidy
 
-The acting half of the hygiene system. The SessionStart/Stop hooks and the PostToolUse write-time flags DETECT drift; this command ACTS on it. Run on demand, at wrap-up when flags are present, or when the flag list has visibly piled up.
+The acting half of the hygiene system. The SessionStart/SessionEnd hooks and the PostToolUse write-time flags DETECT drift; this command ACTS on it. Run on demand, during wrap-up when flags are present, or when the flag list has visibly piled up. Per-turn Stop hooks refresh QMD silently; they do not ask the user to act.
 
 ## Hard rails (safe by construction)
 

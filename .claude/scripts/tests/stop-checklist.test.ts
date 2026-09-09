@@ -1,7 +1,7 @@
 /**
- * Integration tests for the Stop hook entry point.
- * Locks the stop_hook_active bool-check semantics, the default-print
- * behavior on malformed or missing input, and the JSON output envelope.
+ * Integration tests for the shared Stop/SessionEnd hook entry point.
+ * Locks the silent per-turn Stop behavior, the visible true-session-end
+ * handoff, stop_hook_active semantics, and the JSON output envelope.
  *
  * The envelope matters more than it looks. Session-end stdout is
  * JSON-or-nothing on all three agents, and each one fails differently when
@@ -14,7 +14,7 @@
 
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
@@ -61,7 +61,7 @@ function systemMessageOf(stdout: string): string {
 		parsed = JSON.parse(stdout);
 	} catch {
 		assert.fail(
-			`stop-checklist must write a JSON envelope to stdout — got:\n  ${stdout}`,
+			`conversation-boundary hook must write a JSON envelope to stdout — got:\n  ${stdout}`,
 		);
 	}
 	const message = (parsed as { systemMessage?: unknown }).systemMessage;
@@ -92,31 +92,74 @@ describe("stop-checklist", () => {
 		assert.equal(stdout, "{}");
 	});
 
-	test("emits the checklist when stop_hook_active is false", () => {
-		const { stdout, code } = runScript({ stop_hook_active: false });
+	test("normal per-turn Stop emits the empty envelope", () => {
+		const { stdout, code } = runScript({
+			hook_event_name: "Stop",
+			stop_hook_active: false,
+		});
+		assert.equal(code, 0);
+		assert.deepEqual(JSON.parse(stdout), {});
+	});
+
+	test("unchanged hygiene is silent on Stops and reported at SessionEnd", () => {
+		const vault = join(TMP_DIR, "drifted-vault");
+		mkdirSync(join(vault, "work/active"), { recursive: true });
+		writeFileSync(
+			join(vault, "work/active/Done.md"),
+			"---\nstatus: completed\n---\n# Done\n",
+		);
+		const payload = {
+			session_id: "same-session",
+			hook_event_name: "Stop",
+			stop_hook_active: false,
+		};
+
+		const first = spawnHook(SCRIPT, payload, {
+			CLAUDE_PROJECT_DIR: vault,
+			QMD_REFRESH_SENTINEL: SENTINEL,
+		});
+		const second = spawnHook(SCRIPT, payload, {
+			CLAUDE_PROJECT_DIR: vault,
+			QMD_REFRESH_SENTINEL: SENTINEL,
+		});
+		const sessionEnd = spawnHook(
+			SCRIPT,
+			{ session_id: "same-session", hook_event_name: "SessionEnd" },
+			{
+				CLAUDE_PROJECT_DIR: vault,
+				QMD_REFRESH_SENTINEL: SENTINEL,
+			},
+		);
+
+		assert.deepEqual(JSON.parse(first.stdout), {});
+		assert.deepEqual(JSON.parse(second.stdout), {});
+		assert.match(systemMessageOf(sessionEnd.stdout), /work\/active\/Done\.md/);
+	});
+
+	test("string stop_hook_active still follows the normal silent Stop path", () => {
+		const { stdout } = runScript({
+			hook_event_name: "Stop",
+			stop_hook_active: "true",
+		});
+		assert.deepEqual(JSON.parse(stdout), {});
+	});
+
+	test("SessionEnd emits the actionable checklist", () => {
+		const { stdout, code } = runScript({ hook_event_name: "SessionEnd" });
 		assert.equal(code, 0);
 		const message = systemMessageOf(stdout);
 		assert.match(message, /Session end checklist:/);
 		assert.match(message, /Archive completed projects/);
+		assert.match(message, /ask the agent to run om-tidy/i);
 	});
 
-	test("emits the checklist when stop_hook_active is string 'true' (not strict)", () => {
-		const { stdout } = runScript({ stop_hook_active: "true" });
-		assert.match(systemMessageOf(stdout), /Session end checklist:/);
-	});
-
-	test("emits the checklist when the field is absent", () => {
-		const { stdout } = runScript({});
-		assert.match(systemMessageOf(stdout), /Session end checklist:/);
-	});
-
-	test("emits valid JSON on malformed input (safe default)", () => {
+	test("malformed input emits a valid SessionEnd-safe default", () => {
 		const { stdout, code } = runScript("garbage{{");
 		assert.equal(code, 0);
 		assert.match(systemMessageOf(stdout), /Session end checklist:/);
 	});
 
-	test("emits valid JSON on empty stdin", () => {
+	test("empty stdin emits a valid SessionEnd-safe default", () => {
 		const { stdout, code } = runScript(null);
 		assert.equal(code, 0);
 		assert.match(systemMessageOf(stdout), /Session end checklist:/);
@@ -129,35 +172,31 @@ describe("stop-checklist", () => {
 		assert.equal(message, message.trimEnd());
 	});
 
-	// One script serves three agents whose session-end payloads differ in
-	// shape. None of those fields steer the output any more — that is the
-	// property under test. Payloads mirror each vendor's documented schema.
+	// One script serves three agents whose SessionEnd payloads differ in shape.
+	// Payloads mirror each vendor's documented schema.
 	const AGENT_PAYLOADS: ReadonlyArray<{
 		readonly label: string;
 		readonly payload: Record<string, unknown>;
 	}> = [
 		{
-			label: "Claude Code Stop",
+			label: "Claude Code SessionEnd",
 			payload: {
 				session_id: "s1",
 				transcript_path: "/tmp/t.json",
 				cwd: ".",
-				permission_mode: "default",
-				hook_event_name: "Stop",
-				last_assistant_message: "done",
-				stop_hook_active: false,
+				hook_event_name: "SessionEnd",
+				reason: "other",
 			},
 		},
 		{
-			label: "Codex Stop",
+			label: "Codex SessionEnd",
 			payload: {
 				session_id: "s1",
 				transcript_path: "/tmp/t.json",
 				cwd: ".",
-				hook_event_name: "Stop",
+				hook_event_name: "SessionEnd",
 				model: "gpt-5.6-sol",
-				permission_mode: "default",
-				stop_hook_active: false,
+				reason: "other",
 			},
 		},
 		{
@@ -184,7 +223,7 @@ describe("stop-checklist", () => {
 		});
 	}
 
-	test("output does not vary by calling agent", () => {
+	test("SessionEnd output does not vary by calling agent", () => {
 		assert.equal(
 			rendered.size,
 			1,

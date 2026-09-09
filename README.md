@@ -197,7 +197,7 @@ The `om` server sends a lexical *and* a vector sub-query, so retrieval finds the
 
 ### 🔗 Hooks
 
-Five lifecycle hooks handle routing automatically:
+Six lifecycle hooks handle routing automatically:
 
 | Hook | When | What |
 |------|------|------|
@@ -205,7 +205,8 @@ Five lifecycle hooks handle routing automatically:
 | 💬 UserPromptSubmit | Every message | Classifies content (decision, incident, win, 1:1, architecture, person, project update) and injects routing hints |
 | ✍️ PostToolUse | After writing `.md` | Validates frontmatter + wikilinks, blocks misplaced memory files, flags oversized notes (split, don't trim) and write-time topic clusters |
 | 💾 PreCompact | Before context compaction | Backs up session transcript to `thinking/session-logs/` |
-| 🏁 Stop | End of session | Checklist + concrete drift findings (same hygiene scan as SessionStart) |
+| 🔄 Stop | After every response | Silently triggers the shared debounced QMD refresh |
+| 🏁 SessionEnd | When the session actually ends | Checklist + concrete drift findings, with a handoff to ask the agent to run `om-tidy` in a live session |
 
 > [!TIP]
 > You just talk. The hooks handle the routing.
