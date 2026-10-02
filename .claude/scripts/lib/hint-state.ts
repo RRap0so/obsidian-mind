@@ -1,16 +1,22 @@
 /**
- * Once-per-session hint state — pure helpers for the classify-message
- * dedupe (Vault Improvement Backlog, 2026-07-14).
+ * Per-session hook state — what a session has already been shown, so a hook
+ * that fires every turn does not repeat itself (Vault Improvement Backlog,
+ * 2026-07-14; #252).
  *
- * The classifier fires the same routing hint every time a keyword recurs;
- * a long shipping session pays the WIN hint dozens of times. This module
- * keys "already fired" signal names by Claude Code's session_id in a
- * single JSON state file (`.claude/scripts/.hint-state.json`, gitignored;
- * tests route it elsewhere via the CLASSIFY_HINT_STATE env var).
+ * Two hooks use it, each with its own gitignored JSON state file:
+ *  - classify-message fires the same routing hint every time a keyword
+ *    recurs; a long shipping session paid the WIN hint dozens of times.
+ *    `claimUnseen` keeps a set per session: each hint fires once.
+ *    (`.claude/scripts/.hint-state.json`; tests set CLASSIFY_HINT_STATE.)
+ *  - stop-checklist runs after every response. `claimChanged` keeps the
+ *    last report per session: it shows again only when the report differs
+ *    from the last one shown, so drift that is fixed and then comes back is
+ *    reported again. (`.claude/scripts/.checklist-state.json`; tests set
+ *    STOP_CHECKLIST_STATE.)
  *
  * Design constraints, in order:
  *  - Fail open. A missing session_id, unreadable file, or malformed JSON
- *    must degrade to today's behavior (all hints fire), never to silence.
+ *    must degrade to showing everything, never to silence.
  *  - Single file, self-pruning. Per-session files would accumulate without
  *    bound and would put session_id into filesystem paths; a JSON key has
  *    no traversal surface. Sessions older than PRUNE_MAX_AGE_MS or beyond
@@ -18,6 +24,8 @@
  *  - Best-effort concurrency. Two hooks racing is last-writer-wins; the
  *    worst case is one duplicate hint, which is acceptable.
  */
+
+import { readFileSync, writeFileSync } from "node:fs";
 
 export type HintSessionEntry = {
 	readonly seen: readonly string[];
@@ -104,4 +112,64 @@ export function prune(
 		([, a], [, b]) => Date.parse(b.updated) - Date.parse(a.updated),
 	);
 	return Object.fromEntries(fresh.slice(0, maxSessions));
+}
+
+/** The state file's contents, or empty when missing or unreadable (fail open). */
+function loadHintState(path: string): HintState {
+	try {
+		return parseHintState(readFileSync(path, { encoding: "utf-8" }));
+	} catch {
+		return {};
+	}
+}
+
+/** Prune and write the state. Best-effort: a failed write must never block a hook. */
+function saveHintState(path: string, state: HintState, now: Date): void {
+	try {
+		writeFileSync(path, JSON.stringify(prune(state, now.getTime())));
+	} catch {
+		/* best-effort */
+	}
+}
+
+/**
+ * The names this session has not seen yet, now recorded as seen. Each name
+ * is returned once per session; a missing or unreadable state file returns
+ * them all.
+ */
+export function claimUnseen(
+	path: string,
+	sessionId: string,
+	names: readonly string[],
+	now: Date = new Date(),
+): string[] {
+	const state = loadHintState(path);
+	const fresh = unseen(state, sessionId, names);
+	if (fresh.length > 0) {
+		saveHintState(path, record(state, sessionId, fresh, now.toISOString()), now);
+	}
+	return fresh;
+}
+
+/**
+ * Whether `value` differs from the last value recorded for this session,
+ * recording it when it does. Unlike `claimUnseen`, only the latest value is
+ * kept, so a value that returns after a different one counts as changed
+ * (A → B → A shows A again). A missing or unreadable state file counts as
+ * changed.
+ */
+export function claimChanged(
+	path: string,
+	sessionId: string,
+	value: string,
+	now: Date = new Date(),
+): boolean {
+	// Same entry shape as claimUnseen, used as a one-slot record: `seen` holds
+	// only the latest value, so the shared parse and prune apply unchanged.
+	const state = loadHintState(path);
+	const last = state[sessionId]?.seen;
+	if (last?.length === 1 && last[0] === value) return false;
+	const entry = { seen: [value], updated: now.toISOString() };
+	saveHintState(path, { ...state, [sessionId]: entry }, now);
+	return true;
 }

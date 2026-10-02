@@ -56,7 +56,7 @@ For each note created or modified this session:
 
 ### 6. Act on Vault Hygiene
 
-Run the shared vault-hygiene scan while the conversation and tools are still live. If it reports drift, invoke `/om-tidy`: complete its safe mechanical tier now and bring its judgment-tier findings to the user instead of leaving them to a reminder that cannot act on them. Fold the tidy receipt into this wrap-up report; do not create a second report unless the findings need to survive the session.
+Invoke `/om-tidy` while the conversation and tools are still live. It runs the same vault-hygiene scan the hooks use; if that reports drift, complete its safe mechanical tier now and bring its judgment-tier findings to the user instead of leaving them to a reminder that cannot act on them. Fold the tidy receipt into this wrap-up report; do not create a second report unless the findings need to survive the session.
 
 ### 7. Ways of Working Review
 

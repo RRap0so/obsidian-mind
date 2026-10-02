@@ -153,12 +153,13 @@ describe("hook config — the checklist runs where its message is shown", () => 
 			({ command }) => command.includes("stop-checklist.ts"),
 		);
 		const expected = CHECKLIST_EVENT[label];
+		const events = checklistHooks.map(({ event }) => event);
 
 		test(`${label} wires the checklist exactly once, on ${expected}`, () => {
 			assert.deepEqual(
-				checklistHooks.map(({ event }) => event),
+				events,
 				[expected],
-				`expected ${path} to invoke stop-checklist.ts once, on ${expected} — got ${JSON.stringify(checklistHooks.map(({ event }) => event))}`,
+				`expected ${path} to invoke stop-checklist.ts once, on ${expected} — got ${JSON.stringify(events)}`,
 			);
 		});
 

@@ -1,6 +1,7 @@
 /**
- * Active-folder hygiene scan — shared by the SessionStart and SessionEnd hooks
- * (#98/#103), plus the write-time detectors validate-write.ts consumes.
+ * Active-folder hygiene scan — shared by the SessionStart hook and the
+ * conversation-boundary hook (Stop on Claude Code and Codex, SessionEnd on
+ * Gemini; #98/#103), plus the write-time detectors validate-write.ts consumes.
  *
  * Drift modes surfaced:
  *

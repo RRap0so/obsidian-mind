@@ -22,7 +22,7 @@
 
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
@@ -103,22 +103,21 @@ function systemMessageOf(stdout: string): string {
 	return message as string;
 }
 
-/** A vault with one completed note left in work/active/ (a hygiene finding). */
-function driftedVault(name: string): string {
-	const vault = join(TMP_DIR, name);
-	mkdirSync(join(vault, "work/active"), { recursive: true });
-	writeFileSync(
-		join(vault, "work/active/Done.md"),
-		"---\nstatus: completed\n---\n# Done\n",
-	);
-	return vault;
+/** A vault with these completed notes left in work/active/ (none = clean). */
+function vault(name: string, ...completedNotes: string[]): string {
+	const root = join(TMP_DIR, name);
+	mkdirSync(join(root, "work/active"), { recursive: true });
+	for (const note of completedNotes) completeNote(root, note);
+	return root;
 }
 
-const stop = (session_id?: string) => ({
-	...(session_id === undefined ? {} : { session_id }),
-	hook_event_name: "Stop",
-	stop_hook_active: false,
-});
+/** Leave `note` in work/active/ marked completed — one hygiene finding. */
+function completeNote(root: string, note: string): void {
+	writeFileSync(join(root, "work/active", note), "---\nstatus: completed\n---\n# Done\n");
+}
+
+// JSON.stringify drops an undefined session_id, so stop() is a Stop with none.
+const stop = (session_id?: string) => ({ session_id, hook_event_name: "Stop", stop_hook_active: false });
 
 describe("stop-checklist", () => {
 	test("re-entry on strict boolean true emits the empty envelope", () => {
@@ -140,50 +139,61 @@ describe("stop-checklist", () => {
 	});
 
 	test("the first Stop of a session reports the checklist and findings", () => {
-		const vault = driftedVault("first-stop");
-		const message = systemMessageOf(run(stop("s-first"), { vault }).stdout);
-		assert.match(message, /Session end checklist:/);
+		const root = vault("first-stop", "Done.md");
+		const message = systemMessageOf(run(stop("s-first"), { vault: root }).stdout);
+		assert.match(message, /Wrap-up checklist:/);
 		assert.match(message, /work\/active\/Done\.md/);
 	});
 
 	test("a later Stop with an unchanged report is silent (#252)", () => {
-		const vault = driftedVault("unchanged");
+		const root = vault("unchanged", "Done.md");
 		const state = freshState();
-		const first = run(stop("s-same"), { vault, state });
-		const second = run(stop("s-same"), { vault, state });
-		const third = run(stop("s-same"), { vault, state });
+		const first = run(stop("s-same"), { vault: root, state });
+		const second = run(stop("s-same"), { vault: root, state });
+		const third = run(stop("s-same"), { vault: root, state });
 		assert.match(systemMessageOf(first.stdout), /work\/active\/Done\.md/);
 		assert.deepEqual(envelopeOf(second.stdout), {});
 		assert.deepEqual(envelopeOf(third.stdout), {});
 	});
 
 	test("a Stop whose findings changed reports again", () => {
-		const vault = driftedVault("changed");
+		const root = vault("changed", "Done.md");
 		const state = freshState();
-		run(stop("s-change"), { vault, state });
-		writeFileSync(
-			join(vault, "work/active/Also Done.md"),
-			"---\nstatus: completed\n---\n# Also done\n",
-		);
-		const message = systemMessageOf(run(stop("s-change"), { vault, state }).stdout);
+		run(stop("s-change"), { vault: root, state });
+		completeNote(root, "Also Done.md");
+		const message = systemMessageOf(run(stop("s-change"), { vault: root, state }).stdout);
 		assert.match(message, /work\/active\/Also Done\.md/);
 	});
 
-	test("a new session reports again even when nothing changed", () => {
-		const vault = driftedVault("new-session");
+	test("a report that returns to an earlier one is shown again (A → B → A)", () => {
+		// Drift fixed, then reintroduced: the last report shown was the clean
+		// one, so the returning finding is a change and must reach the user.
+		const root = vault("revert", "Done.md");
 		const state = freshState();
-		run(stop("s-one"), { vault, state });
-		const other = run(stop("s-two"), { vault, state });
+		const a1 = run(stop("s-revert"), { vault: root, state });
+		rmSync(join(root, "work/active/Done.md"));
+		const b = run(stop("s-revert"), { vault: root, state });
+		completeNote(root, "Done.md");
+		const a2 = run(stop("s-revert"), { vault: root, state });
+		assert.match(systemMessageOf(a1.stdout), /work\/active\/Done\.md/);
+		assert.doesNotMatch(systemMessageOf(b.stdout), /Vault Hygiene/);
+		assert.match(systemMessageOf(a2.stdout), /work\/active\/Done\.md/);
+	});
+
+	test("a new session reports again even when nothing changed", () => {
+		const root = vault("new-session", "Done.md");
+		const state = freshState();
+		run(stop("s-one"), { vault: root, state });
+		const other = run(stop("s-two"), { vault: root, state });
 		assert.match(systemMessageOf(other.stdout), /work\/active\/Done\.md/);
 	});
 
 	test("a clean vault still gets the checklist once, then silence", () => {
-		const vault = join(TMP_DIR, "clean-vault");
-		mkdirSync(vault, { recursive: true });
+		const root = vault("clean-vault");
 		const state = freshState();
-		const first = run(stop("s-clean"), { vault, state });
-		const second = run(stop("s-clean"), { vault, state });
-		assert.match(systemMessageOf(first.stdout), /Session end checklist:/);
+		const first = run(stop("s-clean"), { vault: root, state });
+		const second = run(stop("s-clean"), { vault: root, state });
+		assert.match(systemMessageOf(first.stdout), /Wrap-up checklist:/);
 		assert.doesNotMatch(systemMessageOf(first.stdout), /Vault Hygiene/);
 		assert.deepEqual(envelopeOf(second.stdout), {});
 	});
@@ -194,37 +204,37 @@ describe("stop-checklist", () => {
 		const state = freshState();
 		const first = run(stop(), { state });
 		const second = run(stop(), { state });
-		assert.match(systemMessageOf(first.stdout), /Session end checklist:/);
-		assert.match(systemMessageOf(second.stdout), /Session end checklist:/);
+		assert.match(systemMessageOf(first.stdout), /Wrap-up checklist:/);
+		assert.match(systemMessageOf(second.stdout), /Wrap-up checklist:/);
 	});
 
 	test("an unreadable dedupe state fails open", () => {
 		const state = freshState();
 		writeFileSync(state, "not json{{");
 		const { stdout } = run(stop("s-corrupt"), { state });
-		assert.match(systemMessageOf(stdout), /Session end checklist:/);
+		assert.match(systemMessageOf(stdout), /Wrap-up checklist:/);
 	});
 
 	test("string stop_hook_active is not re-entry", () => {
 		const { stdout } = run({ ...stop("s-string"), stop_hook_active: "true" });
-		assert.match(systemMessageOf(stdout), /Session end checklist:/);
+		assert.match(systemMessageOf(stdout), /Wrap-up checklist:/);
 	});
 
 	test("SessionEnd reports every time — it is the last chance, not a turn", () => {
-		const vault = driftedVault("session-end");
+		const root = vault("session-end", "Done.md");
 		const state = freshState();
 		const payload = { session_id: "s-end", hook_event_name: "SessionEnd" };
-		const first = run(payload, { vault, state });
-		const second = run(payload, { vault, state });
+		const first = run(payload, { vault: root, state });
+		const second = run(payload, { vault: root, state });
 		assert.match(systemMessageOf(first.stdout), /work\/active\/Done\.md/);
 		assert.match(systemMessageOf(second.stdout), /work\/active\/Done\.md/);
 	});
 
 	test("SessionEnd after a deduped Stop still reports", () => {
-		const vault = driftedVault("stop-then-end");
+		const root = vault("stop-then-end", "Done.md");
 		const state = freshState();
-		run(stop("s-mixed"), { vault, state });
-		const end = run({ session_id: "s-mixed", hook_event_name: "SessionEnd" }, { vault, state });
+		run(stop("s-mixed"), { vault: root, state });
+		const end = run({ session_id: "s-mixed", hook_event_name: "SessionEnd" }, { vault: root, state });
 		assert.match(systemMessageOf(end.stdout), /work\/active\/Done\.md/);
 	});
 
@@ -236,13 +246,13 @@ describe("stop-checklist", () => {
 	test("malformed input emits a valid default", () => {
 		const { stdout, code } = run("garbage{{");
 		assert.equal(code, 0);
-		assert.match(systemMessageOf(stdout), /Session end checklist:/);
+		assert.match(systemMessageOf(stdout), /Wrap-up checklist:/);
 	});
 
 	test("empty stdin emits a valid default", () => {
 		const { stdout, code } = run(null);
 		assert.equal(code, 0);
-		assert.match(systemMessageOf(stdout), /Session end checklist:/);
+		assert.match(systemMessageOf(stdout), /Wrap-up checklist:/);
 	});
 
 	test("does not terminate the message with a stray newline", () => {
@@ -303,7 +313,7 @@ describe("stop-checklist", () => {
 			const { stdout, code } = run(payload);
 			assert.equal(code, 0);
 			const message = systemMessageOf(stdout);
-			assert.match(message, /Session end checklist:/);
+			assert.match(message, /Wrap-up checklist:/);
 			rendered.add(message);
 		});
 	}
