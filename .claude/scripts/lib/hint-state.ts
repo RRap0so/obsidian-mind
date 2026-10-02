@@ -25,7 +25,8 @@
  *    worst case is one duplicate hint, which is acceptable.
  */
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { debug } from "./hook-io.ts";
 
 export type HintSessionEntry = {
 	readonly seen: readonly string[];
@@ -123,12 +124,24 @@ function loadHintState(path: string): HintState {
 	}
 }
 
-/** Prune and write the state. Best-effort: a failed write must never block a hook. */
+/**
+ * Prune and write the state, through a temp file and a rename, so a hook
+ * killed mid-write leaves the previous state rather than truncated JSON that
+ * would read back as empty for every session. Best-effort: a failed write
+ * must never block a hook, and the caller then fails open (shows again).
+ */
 function saveHintState(path: string, state: HintState, now: Date): void {
+	const tmp = `${path}.${process.pid}.tmp`;
 	try {
-		writeFileSync(path, JSON.stringify(prune(state, now.getTime())));
-	} catch {
-		/* best-effort */
+		writeFileSync(tmp, JSON.stringify(prune(state, now.getTime())));
+		renameSync(tmp, path);
+	} catch (err) {
+		debug(`hint-state: could not write ${path} (${(err as Error).message}); the next run fails open`);
+		try {
+			unlinkSync(tmp);
+		} catch {
+			/* nothing was written */
+		}
 	}
 }
 
@@ -166,10 +179,13 @@ export function claimChanged(
 ): boolean {
 	// Same entry shape as claimUnseen, used as a one-slot record: `seen` holds
 	// only the latest value, so the shared parse and prune apply unchanged.
+	// A repeat is recorded too, refreshing `updated`: pruning goes by that
+	// stamp, and a long session whose report never changed must not age out
+	// and be shown again as if new.
 	const state = loadHintState(path);
 	const last = state[sessionId]?.seen;
-	if (last?.length === 1 && last[0] === value) return false;
+	const changed = !(last?.length === 1 && last[0] === value);
 	const entry = { seen: [value], updated: now.toISOString() };
 	saveHintState(path, { ...state, [sessionId]: entry }, now);
-	return true;
+	return changed;
 }

@@ -180,6 +180,22 @@ describe("stop-checklist", () => {
 		assert.match(systemMessageOf(a2.stdout), /work\/active\/Done\.md/);
 	});
 
+	test("a note growing past the threshold does not re-show the report", () => {
+		// The message carries "(31KB)"-style sizes and day ages; those move
+		// with no new drift, so they are left out of the comparison. A note
+		// the agent keeps appending to must not bring back the per-turn repeat.
+		const root = vault("growing");
+		mkdirSync(join(root, "notes"), { recursive: true });
+		const log = join(root, "notes/Log.md");
+		writeFileSync(log, "x".repeat(26_000));
+		const state = freshState();
+		const first = run(stop("s-grow"), { vault: root, state });
+		writeFileSync(log, "x".repeat(40_000));
+		const second = run(stop("s-grow"), { vault: root, state });
+		assert.match(systemMessageOf(first.stdout), /notes\/Log\.md \(26KB\)/);
+		assert.deepEqual(envelopeOf(second.stdout), {});
+	});
+
 	test("a new session reports again even when nothing changed", () => {
 		const root = vault("new-session", "Done.md");
 		const state = freshState();

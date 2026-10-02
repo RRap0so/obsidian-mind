@@ -7,12 +7,13 @@
  * An empty value counts as unset (`||`, not `??`): an empty string is never
  * a usable root, and treating it as one resolved paths against "".
  *
- * The fallback is the caller's, because callers differ for a reason: most
- * fall back to the working directory, while a hook that can fire from a
- * drifted shell cwd falls back to its own location (qmd-refresh.ts's
- * resolveVaultRoot). Not to be confused with that function, which ignores
- * these variables on purpose, or with mcp-context.ts's, which reads
- * OM_VAULT_PATH for the MCP server.
+ * The fallback is the caller's. Every hook passes the working directory:
+ * the hook commands themselves resolve their script through
+ * `${*_PROJECT_DIR:-.}`, so when the variable is unset the hook only runs at
+ * all if cwd is the vault. Not to be confused with qmd-refresh.ts's
+ * resolveVaultRoot, which ignores these variables on purpose (a detached
+ * worker anchors to its own location), or with mcp-context.ts's, which
+ * reads OM_VAULT_PATH for the MCP server.
  */
 
 const PROJECT_DIR_VARS = [

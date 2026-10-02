@@ -37,7 +37,7 @@ import {
 	writeSilentHookOutput,
 	writeSystemMessage,
 } from "./lib/hook-io.ts";
-import { resolveVaultRoot, triggerDebouncedRefresh } from "./lib/qmd-refresh.ts";
+import { triggerDebouncedRefresh } from "./lib/qmd-refresh.ts";
 import {
 	formatActiveHygiene,
 	parseMemoryRoot,
@@ -85,15 +85,13 @@ const checklist = [
 	"- Update indexes? (Index.md, Memories.md, People & Context, Brag Doc)",
 	"- New notes linked? (orphans are bugs)",
 	"- Ask the agent to run om-vault-audit if many notes were created/modified",
-	"- To act on any drift, ask the agent to run om-tidy (in a new session if this one has ended)",
+	"- To act on any drift, ask the agent to run om-tidy",
 ].join("\n");
 
 // Concrete drift findings beat a generic checklist (#98/#103/#106): the
 // same scan SessionStart runs, so the session closes against the same
 // facts it opened with. Silent when clean.
-// Falls back to its own location, not cwd: a hook can fire from a drifted
-// shell cwd (lib/project-dir.ts).
-const vaultRoot = resolveProjectDir(resolveVaultRoot(SCRIPT_DIR));
+const vaultRoot = resolveProjectDir(process.cwd());
 let manifestJson: string | null = null;
 try {
 	manifestJson = readFileSync(join(vaultRoot, "vault-manifest.json"), {
@@ -102,15 +100,14 @@ try {
 } catch {
 	/* missing manifest → default open-loop config */
 }
-const hygieneLines = formatActiveHygiene(
-	scanActiveHygiene(
-		vaultRoot,
-		Date.now(),
-		parseOpenLoopConfig(manifestJson),
-		parseInfraRootFilenames(manifestJson),
-		parseMemoryRoot(manifestJson),
-	),
+const report = scanActiveHygiene(
+	vaultRoot,
+	Date.now(),
+	parseOpenLoopConfig(manifestJson),
+	parseInfraRootFilenames(manifestJson),
+	parseMemoryRoot(manifestJson),
 );
+const hygieneLines = formatActiveHygiene(report);
 
 // No trailing newline: this is a message rendered by the agent's UI, not a
 // line written to a stream.
@@ -120,19 +117,29 @@ const message =
 		? "\n\nVault Hygiene (drift detected):\n" + hygieneLines.join("\n")
 		: "");
 
+// Numbers that move with no new drift to act on: a note growing past the
+// threshold, an item a day older. They stay in the message but not in the
+// comparison, or a note the agent keeps appending to would re-show the report
+// every turn — the #252 repeat by another route.
+const VOLATILE_FIELDS = new Set(["sizeKb", "ageDays", "oldestDays"]);
+
+/** What identifies a report: the checklist and which findings exist, not their ages or sizes. */
+function reportKey(): string {
+	const findings = JSON.stringify(report, (k, v) => (VOLATILE_FIELDS.has(k) ? undefined : v));
+	return createHash("sha256").update(checklist + "\n" + findings).digest("hex").slice(0, 16);
+}
+
 // SessionEnd (and any input without a recognisable event, the safe default)
-// always reports. Stop reports when the report differs from the last one this
-// session was shown, compared by a hash of its text: the first Stop, and any
-// change since, including drift that was fixed and then came back. A missing
-// session_id fails open to reporting.
-const reportKey = (report: string): string =>
-	createHash("sha256").update(report).digest("hex").slice(0, 16);
+// always reports. Stop reports when the findings differ from the last report
+// this session was shown: the first Stop, and any change since, including
+// drift that was fixed and then came back. A missing session_id fails open
+// to reporting.
 const sessionId = input?.session_id;
 const show =
 	input?.hook_event_name !== "Stop" ||
 	typeof sessionId !== "string" ||
 	!sessionId ||
-	claimChanged(STATE_PATH, sessionId, reportKey(message));
+	claimChanged(STATE_PATH, sessionId, reportKey());
 
 if (show) writeSystemMessage(message);
 else writeSilentHookOutput();

@@ -6,7 +6,7 @@
 
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -145,6 +145,22 @@ describe("claimUnseen / claimChanged (state file I/O)", () => {
 		assert.equal(claimChanged(p, "s", "A"), true);
 		const stored = parseHintState(readFileSync(p, "utf-8"));
 		assert.deepEqual(stored["s"]?.seen, ["A"]);
+	});
+
+	test("a repeat refreshes the session's updated stamp, so an active session is not pruned", () => {
+		const p = path();
+		claimChanged(p, "s", "A", new Date("2026-10-01T00:00:00Z"));
+		assert.equal(claimChanged(p, "s", "A", new Date("2026-10-05T00:00:00Z")), false);
+		const stored = parseHintState(readFileSync(p, "utf-8"));
+		assert.equal(stored["s"]?.updated, "2026-10-05T00:00:00.000Z");
+	});
+
+	test("writes go through a temp file and leave none behind", () => {
+		const p = path();
+		claimChanged(p, "s", "A");
+		claimUnseen(p + ".u", "s", ["WIN"]);
+		const leftovers = readdirSync(dir).filter((f) => f.endsWith(".tmp"));
+		assert.deepEqual(leftovers, []);
 	});
 
 	test("an unreadable state file fails open for both", () => {

@@ -49,10 +49,9 @@ For each note created or modified this session:
 - Any new people not added to People & Context?
 - Any thinking notes that should be promoted or deleted?
 
-### 5. Archive Check
+### 5. Status Check
 
-- Are there notes in `work/active/` that should be moved to `work/archive/YYYY/`?
-- Any status fields still `active` that should be `completed`?
+- Any status fields still `active` that should be `completed`? Mark them; step 6's `/om-tidy` moves completed notes out of `work/active/` to `work/archive/YYYY/`, so do not move them by hand here.
 
 ### 6. Act on Vault Hygiene
 

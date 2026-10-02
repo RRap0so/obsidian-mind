@@ -11,7 +11,7 @@ It is not a folder tour. For the day-to-day layout, read `CLAUDE.md`. For the us
 obsidian-mind is a plain Obsidian vault with four systems layered on top:
 
 1. **The vault itself** — Markdown files, frontmatter, wikilinks. Portable, git-tracked, Obsidian-browsable.
-2. **A hook pipeline** — small TypeScript scripts invoked by the agent harness at lifecycle events (session start, every message, after writes, before compaction, at session end).
+2. **A hook pipeline** — small TypeScript scripts invoked by the agent harness at lifecycle events (session start, every message, after writes, before compaction, after each response; Gemini at session end).
 3. **A semantic search layer (QMD)** — a separate CLI + SQLite index + MCP server, all scoped to a named index read from `vault-manifest.json`.
 4. **The `om` MCP server** — the vault as a service, so a session running in a *different repository* can search it, read notes, follow the graph, and record back into it.
 
