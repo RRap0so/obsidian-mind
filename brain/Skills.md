@@ -106,8 +106,7 @@ Subagents run in isolated context windows via `.claude/agents/`. They don't poll
 | UserPromptSubmit | Every message | Classify content (decision, incident, 1:1, win, architecture, person, project update) and inject routing hints |
 | PostToolUse | After writing `.md` | Validates frontmatter, checks for wikilinks |
 | PreCompact | Before context compaction | Back up session transcript to `thinking/session-logs/` |
-| Stop | After every response | Silently trigger the shared debounced QMD refresh |
-| SessionEnd | When the session actually ends | Checklist + hygiene findings; ask the agent to run `om-tidy` in a live session to act |
+| Stop | After every response | Checklist + hygiene findings, once per session and again when they change; ask the agent to run `om-tidy` to act |
 
 ## Semantic Search (QMD)
 

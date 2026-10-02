@@ -157,7 +157,7 @@ The `infrastructure[]` vs `user_content_roots[]` split is what makes `/om-vault-
 
 ## Lifecycle Hooks
 
-Six hooks run at different moments in a session. Each is a small Node script invoked via `--experimental-strip-types` (TypeScript executes directly, no build step).
+Five hooks run at different moments in a session. Each is a small Node script invoked via `--experimental-strip-types` (TypeScript executes directly, no build step).
 
 ```mermaid
 sequenceDiagram
@@ -194,12 +194,8 @@ sequenceDiagram
     loop each completed response
         Agent->>Hooks: Stop
         Hooks->>QMD: debounced refresh (detached)
-        Hooks-->>Agent: empty envelope (no user warning)
+        Hooks-->>User: checklist + hygiene, first time this session or when changed
     end
-
-    User->>Agent: end session
-    Agent->>Hooks: SessionEnd
-    Hooks-->>User: checklist + hygiene handoff
 ```
 
 A few specific design choices are worth calling out:
@@ -208,8 +204,8 @@ A few specific design choices are worth calling out:
 - **`UserPromptSubmit` classifies, it does not route.** It tags the prompt with hints like `ARCHITECTURE discussion` or `DECISION`; the agent decides where to file. Keeping the hook opinion-free means the routing logic lives in `CLAUDE.md`, which is editable per-user without touching scripts.
 - **QMD refresh is shared, debounced, and detached.** Three hook entries fire the same refresh helper — `PostToolUse` (after `.md` writes), `PreCompact` (before transcript backup; writes tend to cluster before compaction), and `Stop` (after a response) — sharing one sentinel file so a burst of events produces at most one worker per debounce window. The actual indexing runs in `.claude/scripts/qmd-refresh-run.ts` as a detached, stdio-silent worker (`qmd update` → `qmd embed` → tail-chase `qmd update`), so the parent hook returns in milliseconds and nothing flows to the agent's context.
 - **`PreCompact` also backs up the transcript.** In addition to kicking the QMD refresh, it copies the current session transcript out to `thinking/session-logs/` so long conversations remain recoverable after compaction.
-- **`Stop` is deliberately silent.** Claude and Codex fire it whenever the agent finishes a response, not when the session ends. It triggers the shared refresh and returns an empty JSON envelope, so unchanged hygiene does not become a warning after every turn.
-- **`SessionEnd` is a handoff, not an acting surface.** All three agents emit the checklist and concrete hygiene findings only when the conversation actually ends. The message tells the user to ask the agent to run `om-tidy` in a live session; explicit `/om-wrap-up` runs that acting pass before tools disappear.
+- **`Stop` reports once, not every turn.** Claude and Codex fire it whenever the agent finishes a response, not when the session ends (#252). It triggers the shared refresh every time, but shows the checklist and hygiene findings only the first time a session sees that exact report, and again when the findings change; otherwise it returns the empty JSON envelope. A warning that repeats unchanged is one users learn to ignore (#155). The dedupe reuses the classifier's per-session state shape (#107): one self-pruning file, failing open to "show" on a missing `session_id` or unreadable state.
+- **Why not `SessionEnd`.** It looks like the natural home for an end-of-session checklist, but Claude Code discards a SessionEnd hook's `systemMessage`, and Codex documents SessionEnd as advisory and does not surface its `systemMessage`. Wired there, the checklist would reach nobody on two of the three agents. Gemini does display it during shutdown, so Gemini keeps its SessionEnd wiring. The acting path is `/om-wrap-up`, which runs the hygiene pass while tools are still live.
 
 ---
 
@@ -876,9 +872,9 @@ Step 2 is not documentation garnish. Measured: with the server wired and no repo
 
 ## Multi-Agent Portability
 
-The same scripts serve three agents. Each agent has its own config file mapping equivalent lifecycle events to the shared scripts. Claude Code and Codex use `Stop` as a per-turn boundary and `SessionEnd` as the true conversation boundary; Gemini needs only `SessionEnd` here. The script branches on the documented event name, never on an agent-specific payload field.
+The same scripts serve three agents. Each agent has its own config file mapping equivalent lifecycle events to the shared scripts. The checklist runs on `Stop` for Claude Code and Codex (per response, deduped) and on `SessionEnd` for Gemini (at shutdown). The script branches on the documented event name, never on an agent-specific payload field.
 
-Session-boundary output is JSON-or-nothing on all three agents. `stop-checklist.ts` therefore emits `{}` for per-turn Stop and `{"systemMessage": ...}` for SessionEnd. `systemMessage` is intentionally a user warning rather than model context: it can hand work to the next live session, but it cannot invoke a command after tools are gone. That is why `om-wrap-up` owns the acting path and SessionEnd owns only the final receipt.
+Session-boundary output is JSON-or-nothing on all three agents. `stop-checklist.ts` emits `{"systemMessage": ...}` when it reports and `{}` when a Stop has nothing new to say. `systemMessage` is intentionally a user warning rather than model context: it tells the user what to ask for, but it cannot make the agent act. That is why `om-wrap-up` owns the acting path and the hook owns only the report.
 
 ```mermaid
 flowchart TB
